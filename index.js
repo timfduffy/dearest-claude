@@ -623,7 +623,7 @@ class ClaudeBot extends BaseBot {
       // Add the final message
       messages[0].content.push({
         type: 'text',
-        text: `\nThe most recent message mentioning you is: "${post.record.text}"\n\nPlease respond to the request in the most recent message in 300 characters or less. Your response will be posted to BlueSky as a reply to the most recent message mentioning you by a bot. `
+        text: `\nThe most recent message mentioning you is: "${post.record.text}"\n\nPlease respond to the request in the most recent message in 300 characters or less. Your response will be posted to BlueSky as a reply to the most recent message mentioning you by a bot. For reference only (no action needed): after you reply, a separate step generates an image based on your reply and attaches it to your message. You do not need to mention, describe, or account for the image in your text.`
       });
 
       const message = await this.anthropic.messages.create({
