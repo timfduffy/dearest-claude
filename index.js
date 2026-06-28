@@ -449,7 +449,7 @@ class BaseBot {
       const altText = [
         `Response Model: ${this.getModelName()}`,
         'Response Prompt: Text and images upthread of this comment',
-        'Image Prompt Model: Claude 3.5 Haiku',
+        'Image Prompt Model: Claude Haiku 4.5',
         `Image Prompt: ${imagePrompt}`,
         'Image Generation Model: Fal AI Flux/Schnell'
       ].join('\n');
@@ -551,7 +551,7 @@ class ClaudeBot extends BaseBot {
       });
 
       const message = await this.anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-opus-4-8',
         max_tokens: 150,
         messages: messages
       });
@@ -565,7 +565,7 @@ class ClaudeBot extends BaseBot {
 
   async generateImagePrompt(post, response) {
     const promptMessage = await this.anthropic.messages.create({
-      model: 'claude-3-5-haiku-20241022',
+      model: 'claude-haiku-4-5',
       max_tokens: 150,
       messages: [{
         role: 'user',
@@ -576,7 +576,7 @@ class ClaudeBot extends BaseBot {
   }
 
   getModelName() {
-    return 'Claude Sonnet 4';
+    return 'Claude Opus 4.8';
   }
 }
 
@@ -667,7 +667,7 @@ class DeepSeekBot extends BaseBot {
   // Use Claude Haiku for image prompts, same as ClaudeBot
   async generateImagePrompt(post, response) {
     const promptMessage = await this.anthropic.messages.create({
-      model: 'claude-3-5-haiku-20241022',
+      model: 'claude-haiku-4-5',
       max_tokens: 150,
       messages: [{
         role: 'user',
