@@ -645,7 +645,7 @@ class ClaudeBot extends BaseBot {
       max_tokens: 150,
       messages: [{
         role: 'user',
-        content: `Create a prompt for an image model based on the following question and answer. If the prompt doesn't already have animals in it, add cats.\n\nQ: ${post.record.text}\nA: ${response}`
+        content: `Create a prompt for an image model based on the following question and answer. The image model is not good at rendering text, so lean toward purely visual scenes and avoid elements that rely on a lot of text, such as speech bubbles, signs, or blocks of writing. If the prompt doesn't already have animals in it, add cats.\n\nQ: ${post.record.text}\nA: ${response}`
       }]
     });
     return promptMessage.content[0].text;
@@ -747,7 +747,7 @@ class DeepSeekBot extends BaseBot {
       max_tokens: 150,
       messages: [{
         role: 'user',
-        content: `Create a prompt for an image model based on the following question and answer. If the prompt doesn't already have animals in it, add either whales or cats, it's your choice!.\n\nQ: ${post.record.text}\nA: ${response}`
+        content: `Create a prompt for an image model based on the following question and answer. The image model is not good at rendering text, so lean toward purely visual scenes and avoid elements that rely on a lot of text, such as speech bubbles, signs, or blocks of writing. If the prompt doesn't already have animals in it, add either whales or cats, it's your choice!.\n\nQ: ${post.record.text}\nA: ${response}`
       }]
     });
     return promptMessage.content[0].text;
