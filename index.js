@@ -120,6 +120,7 @@ class BaseBot {
     this.config = config;
     this.agent = agent;
     this.repliedPosts = new Set();
+    this.did = null; // set on authenticate()
   }
 
   async generateResponse(post, context) {
@@ -177,41 +178,26 @@ class BaseBot {
       
       console.log('Starting monitoring...');
 
-      let lastCheckedPost = null;
-
       while (true) {
         try {
           const posts = await this.getRecentPosts();
-          
+
           if (!posts.length) {
             console.log('No posts found');
             await utils.sleep(this.config.CHECK_INTERVAL);
             continue;
           }
 
-          const latestPost = posts[0];
-          
-          if (lastCheckedPost && latestPost.uri === lastCheckedPost) {
-            console.log('Already processed this post, skipping...');
-            await utils.sleep(this.config.CHECK_INTERVAL);
-            continue;
-          }
-          
-          lastCheckedPost = latestPost.uri;
-
-          if (latestPost.post?.record?.text?.includes(this.config.BLUESKY_IDENTIFIER)) {
-            const alreadyReplied = await this.hasAlreadyReplied(latestPost.post);
-            
-            if (!alreadyReplied) {
-              console.log('Generating and posting response...');
-              const context = await this.getReplyContext(latestPost.post);
-              const response = await this.generateResponse(latestPost.post, context);
-              
-              if (response) {
-                await this.postReply(latestPost.post, response);
-                // Add rate limiting delay after posting
-                await utils.sleep(2000);
-              }
+          // Handle the most recent notifications, oldest-first so replies go out
+          // in chronological order. hasAlreadyReplied + repliedPosts make this
+          // safe to run every cycle without duplicate responses.
+          const batch = posts.slice(0, this.config.MAX_PER_CHECK).reverse();
+          for (const item of batch) {
+            try {
+              await this.handleNotification(item);
+            } catch (err) {
+              console.error('Error handling notification:', err);
+              this.repliedPosts.add(item.post.uri); // don't retry a poison post
             }
           }
 
@@ -238,14 +224,93 @@ class BaseBot {
     }
   }
 
+  // Decide whether to reply to a single notification, and do so if appropriate
+  async handleNotification(item) {
+    const mentionsBot = item.post?.record?.text?.includes(this.config.BLUESKY_IDENTIFIER);
+
+    // Only answer a reply if it's a *direct* reply to one of our own posts
+    // (parent authored by us). Bluesky also notifies us about deeper replies
+    // within our threads, but we don't want to jump into those conversations.
+    const isDirectReplyToBot =
+      item.reason === 'reply' &&
+      !!this.did &&
+      item.post?.record?.reply?.parent?.uri?.startsWith(`at://${this.did}/`);
+
+    if (!mentionsBot && !isDirectReplyToBot) return;
+
+    if (await this.hasAlreadyReplied(item.post)) return;
+
+    const context = await this.getReplyContext(item.post);
+
+    // Loop guard: stop once we've already posted enough times in this thread,
+    // so the bot can't get stuck ping-ponging with other bots.
+    const ownReplies = context.filter(
+      msg => msg.author === this.config.BLUESKY_IDENTIFIER
+    ).length;
+
+    if (ownReplies >= this.config.MAX_THREAD_REPLIES) {
+      console.log(`Already replied ${ownReplies} times in this thread (max ${this.config.MAX_THREAD_REPLIES}), skipping to avoid loops`);
+      this.repliedPosts.add(item.post.uri);
+      return;
+    }
+
+    // For direct replies (not explicit mentions), ask Haiku whether this is
+    // actually something the bot should weigh in on — replies to the bot are
+    // sometimes just tagging another person, side chatter, etc.
+    if (isDirectReplyToBot && !mentionsBot) {
+      const warrants = await this.shouldReply(item.post, context);
+      if (!warrants) {
+        console.log('Reply judged not to warrant a response, skipping');
+        this.repliedPosts.add(item.post.uri);
+        return;
+      }
+    }
+
+    console.log('Generating and posting response...');
+    const response = await this.generateResponse(item.post, context);
+
+    if (response) {
+      await this.postReply(item.post, response);
+      // Add rate limiting delay after posting
+      await utils.sleep(2000);
+    }
+  }
+
+  // Ask Haiku whether a direct reply actually warrants a response from the bot
+  async shouldReply(post, context) {
+    try {
+      const conversation = context
+        .map(msg => `${msg.author}: ${msg.text}`)
+        .join('\n');
+
+      const judgment = await this.anthropic.messages.create({
+        model: 'claude-haiku-4-5',
+        max_tokens: 5,
+        messages: [{
+          role: 'user',
+          content: `You are a filter for a Bluesky bot with the handle "${this.config.BLUESKY_IDENTIFIER}". Someone has replied to one of the bot's posts. Decide whether this reply actually warrants a response from the bot — i.e. it is genuinely addressed to the bot and invites or expects a reply. If the reply is not really directed at the bot (for example it just tags another person, is a side conversation between others, or otherwise doesn't call for a response), it does NOT warrant a reply.\n\nConversation so far (oldest first):\n${conversation}\n\nMost recent reply:\n${post.author.handle}: ${post.record.text}\n\nShould the bot reply? Answer with only "yes" or "no".`
+        }]
+      });
+
+      const answer = (judgment.content[0]?.text || '').trim().toLowerCase();
+      const yes = answer.startsWith('y');
+      console.log(`shouldReply judgment: "${answer}" -> ${yes}`);
+      return yes;
+    } catch (error) {
+      console.error('Error in shouldReply check:', error);
+      return true; // fail open: if the check errors, fall back to replying
+    }
+  }
+
   // Function to authenticate with Bluesky
   async authenticate() {
     try {
-      await this.agent.login({
+      const { data } = await this.agent.login({
         identifier: this.config.BLUESKY_IDENTIFIER,
         password: this.config.BLUESKY_APP_PASSWORD,
       });
-      console.log('Successfully authenticated with Bluesky');
+      this.did = data.did; // our own DID, used to detect direct replies to us
+      console.log(`Successfully authenticated with Bluesky as ${this.did}`);
     } catch (error) {
       console.error('Authentication failed:', error);
       throw error;
@@ -263,16 +328,17 @@ class BaseBot {
         throw new Error('No notifications returned');
       }
       
-      // Filter for mention notifications, excluding self-mentions
+      // Respond to mentions and to replies to our own posts, excluding self
       const relevantPosts = notifications.notifications
         .filter(notif => {
-          // Check if it's a mention
-          if (notif.reason !== 'mention') return false;
-          
+          // Only mentions and replies (not likes, reposts, follows, etc.)
+          if (notif.reason !== 'mention' && notif.reason !== 'reply') return false;
+
           // Prevent self-replies
           return notif.author.handle !== this.config.BLUESKY_IDENTIFIER;
         })
         .map(notif => ({
+          reason: notif.reason,
           post: {
             uri: notif.uri,
             cid: notif.cid,
@@ -280,8 +346,8 @@ class BaseBot {
             record: notif.record
           }
         }));
-      
-      console.log(`Found ${relevantPosts.length} relevant mentions`);
+
+      console.log(`Found ${relevantPosts.length} relevant notifications`);
       return relevantPosts;
     } catch (error) {
       console.error('Error in getRecentPosts:', error);
@@ -413,13 +479,17 @@ class BaseBot {
       console.log('Generated image prompt:', imagePrompt);
 
       // Generate image using Fal
-      const falResult = await fal.subscribe("fal-ai/flux/schnell", {
+      const falResult = await fal.subscribe("fal-ai/flux-2/klein/9b", {
         input: {
           prompt: imagePrompt,
+          num_inference_steps: 4,
           image_size: {
-            width: 512,
-            height: 512
-          }
+            width: 768,
+            height: 768
+          },
+          num_images: 1,
+          enable_safety_checker: true,
+          output_format: "png"
         },
         logs: true
       });
@@ -431,11 +501,12 @@ class BaseBot {
       const imageResponse = await fetch(imageUrl);
       const imageBuffer = await imageResponse.buffer();
 
-      // Process image just to ensure correct format and size
+      // Convert to JPEG, preserving the generated aspect ratio. Bound the
+      // longest side so the blob stays under Bluesky's ~1MB image limit.
       const processedImageBuffer = await sharp(imageBuffer)
-        .resize(512, 512, {
-          fit: 'contain',
-          background: { r: 255, g: 255, b: 255, alpha: 1 }
+        .resize(1024, 1024, {
+          fit: 'inside',
+          withoutEnlargement: true
         })
         .jpeg({ quality: 80 })
         .toBuffer();
@@ -451,7 +522,7 @@ class BaseBot {
         'Response Prompt: Text and images upthread of this comment',
         'Image Prompt Model: Claude Haiku 4.5',
         `Image Prompt: ${imagePrompt}`,
-        'Image Generation Model: Fal AI Flux/Schnell'
+        'Image Generation Model: Fal AI FLUX.2 [klein] 9B'
       ].join('\n');
 
       const replyObject = {

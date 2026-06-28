@@ -38,6 +38,10 @@ const config = {
   MAX_RETRIES: parseInt(process.env.MAX_RETRIES || '5'),
   BACKOFF_DELAY: parseInt(process.env.BACKOFF_DELAY || '60000'),
   MAX_REPLIED_POSTS: parseInt(process.env.MAX_REPLIED_POSTS || '1000'),
+  // Loop guard: max times the bot will reply within a single thread
+  MAX_THREAD_REPLIES: parseInt(process.env.MAX_THREAD_REPLIES || '4'),
+  // Max notifications to handle per polling cycle (processed oldest-first)
+  MAX_PER_CHECK: parseInt(process.env.MAX_PER_CHECK || '5'),
 };
 
 // Validate configuration
