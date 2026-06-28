@@ -49,7 +49,12 @@ const utils = {
   async imageUrlToBase64(imageUrl) {
     try {
       const response = await fetch(imageUrl);
-      return (await response.buffer()).toString('base64');
+      const inputBuffer = await response.buffer();
+      // Normalize to JPEG so the declared media_type always matches the bytes.
+      // Bluesky serves images as webp/png/etc., which otherwise mismatch the
+      // hardcoded image/jpeg media type and get rejected by the API.
+      const jpegBuffer = await sharp(inputBuffer).jpeg({ quality: 85 }).toBuffer();
+      return jpegBuffer.toString('base64');
     } catch (error) {
       console.error('Error converting image to base64:', error);
       return null;
