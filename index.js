@@ -365,22 +365,39 @@ class BaseBot {
     try {
       const conversation = [];
       
-      // Helper function to extract images
-      const extractImages = (record) => {
-        const images = record?.embed?.images || 
-                      record?.embed?.media?.images || 
-                      [];
-        return images.map(img => ({
-          alt: img.alt,
-          url: img.fullsize || img.thumb
-        }));
+      // Pull image alt-text + display URLs from a post *view* (the API's
+      // hydrated form), covering both plain image posts and quote-with-media
+      // posts. The notification record only carries blob refs, not display
+      // URLs, so images must be read from the view.
+      const viewImages = (view) => {
+        const imgs = view?.embed?.images
+          || view?.embed?.media?.images
+          || [];
+        return imgs
+          .map(img => ({ alt: img.alt, url: img.fullsize || img.thumb }))
+          .filter(img => img.url);
       };
+
+      // Fetch the incoming post's own view so its images come with URLs.
+      let mainImages = [];
+      try {
+        const { data: mainThread } = await this.agent.getPostThread({
+          uri: post.uri,
+          depth: 0,
+          parentHeight: 0
+        });
+        if (mainThread.thread.post) {
+          mainImages = viewImages(mainThread.thread.post);
+        }
+      } catch (error) {
+        console.error('Error fetching main post view:', error);
+      }
 
       // Add the main post
       conversation.push({
         author: post.author.handle,
         text: post.record.text,
-        images: extractImages(post.record)
+        images: mainImages
       });
 
       if (post.record.embed?.$type === 'app.bsky.embed.record' && post.record.embed) {
@@ -428,9 +445,10 @@ class BaseBot {
         }
       }
 
-      // Then get the thread history if it's a reply
+      // Then walk up the thread history. Start from the parent, since the main
+      // post is already added above (avoids duplicating it in the context).
       if (post.record?.reply) {
-        let currentUri = post.uri;
+        let currentUri = post.record.reply.parent?.uri;
 
         while (currentUri) {
           const { data: thread } = await this.agent.getPostThread({
@@ -441,21 +459,10 @@ class BaseBot {
 
           if (!thread.thread.post) break;
 
-          // Extract image information if present
-          const images = thread.thread.post.record.embed?.images || 
-                        thread.thread.post.record.embed?.media?.images || 
-                        [];
-          
           conversation.unshift({
             author: thread.thread.post.author.handle,
             text: thread.thread.post.record.text,
-            images: images.map(img => ({
-              alt: img.alt,
-              url: thread.thread.post.embed?.images?.[0]?.fullsize || 
-                   thread.thread.post.embed?.images?.[0]?.thumb ||
-                   img.image?.fullsize || 
-                   img.image?.thumb
-            }))
+            images: viewImages(thread.thread.post)
           });
 
           if (thread.thread.parent && thread.thread.parent.post) {
@@ -593,6 +600,7 @@ class ClaudeBot extends BaseBot {
           if (msg.images && msg.images.length > 0) {
             console.log(`Processing ${msg.images.length} images for message`);
             for (const image of msg.images) {
+              if (!image.url) continue;
               console.log(`Converting image to base64: ${image.url}`);
               const base64Image = await utils.imageUrlToBase64(image.url);
               if (base64Image) {
